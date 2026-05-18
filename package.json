@@ -2,6 +2,7 @@
   "name": "rocket-api",
   "version": "1.0.0",
   "description": "Rocket Test — a lightweight API testing tool",
+  "author": "Rocket Test",
   "main": "src/main/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on tcp:localhost:5173 && electron .\"",
@@ -38,6 +39,7 @@
     "files": [
       "dist/**/*",
       "src/main/**/*",
+      "src/preload/**/*",
       "package.json"
     ],
     "win": {
@@ -57,7 +59,8 @@
     "mac": {
       "target": "dmg",
       "icon": "assets/icon.icns",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "identity": null
     },
     "dmg": {
       "title": "Install Rocket Test",
