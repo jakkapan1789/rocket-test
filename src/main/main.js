@@ -33,8 +33,8 @@ function writeJSON(filePath, data) {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: 900,
+    height: 600,
     minWidth: 900,
     minHeight: 600,
     backgroundColor: "#1e1e1e",

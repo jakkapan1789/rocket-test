@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { sendRequest } from '../../services/apiClient.js'
+import SimpleSelect from './SimpleSelect.jsx'
 
 function resolvePath(obj, path) {
   if (obj == null || !path) return undefined
@@ -312,17 +313,15 @@ export default function BatchRunner({ collections, envConfig, activeEnvVars = []
         </div>
 
         {/* Collection picker */}
-        <div style={{ padding: '6px 10px 4px', borderBottom: '1px solid var(--vsc-border)', flexShrink: 0 }}>
-          <div style={{ fontSize: 10, color: 'var(--vsc-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Collection</div>
-          <select
-            className="batch-col-select"
+        <div style={{ padding: '6px 10px 8px', borderBottom: '1px solid var(--vsc-border)', flexShrink: 0 }}>
+          <div style={{ fontSize: 10, color: 'var(--vsc-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Collection</div>
+          <SimpleSelect
             value={selectedColId}
-            onChange={(e) => { setSelectedColId(e.target.value); setFlowNodes([]) }}
-            disabled={isRunning}
-          >
-            {collections.length === 0 && <option value="">No collections</option>}
-            {collections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+            onChange={(v) => { setSelectedColId(v); setFlowNodes([]) }}
+            disabled={isRunning || collections.length === 0}
+            placeholder="No collections"
+            options={collections.map((c) => ({ value: c.id, label: c.name }))}
+          />
         </div>
 
         {/* Request list */}

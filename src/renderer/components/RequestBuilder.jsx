@@ -1,9 +1,117 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import Editor from '@monaco-editor/react'
+import SimpleSelect from './SimpleSelect.jsx'
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']
 
-function KVEditor({ rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = 'Value' }) {
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function HighlightInput({ value, onChange, className = '', placeholder, onKeyDown, style, envVars = [] }) {
+  const inputRef = useRef(null)
+  const backRef  = useRef(null)
+
+  const syncScroll = () => {
+    if (backRef.current && inputRef.current)
+      backRef.current.scrollLeft = inputRef.current.scrollLeft
+  }
+
+  const knownKeys = useMemo(() =>
+    new Set(envVars.filter(v => v.enabled !== false && v.key).map(v => v.key))
+  , [envVars])
+
+  const highlighted = useMemo(() =>
+    (value || '').split(/(\{\{[^}]*\}\})/).map(part => {
+      if (/^\{\{[^}]*\}\}$/.test(part)) {
+        const name = part.slice(2, -2)
+        const cls = knownKeys.has(name) ? 'var-hl var-hl-ok' : 'var-hl var-hl-err'
+        return `<mark class="${cls}">${escapeHtml(part)}</mark>`
+      }
+      return escapeHtml(part)
+    }).join('')
+  , [value, knownKeys])
+
+  return (
+    <div className="hi-wrap">
+      <div
+        ref={backRef}
+        className={`hi-back ${className}`}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: highlighted }}
+      />
+      <input
+        ref={inputRef}
+        className={`hi-field ${className}`}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        onKeyDown={onKeyDown}
+        onScroll={syncScroll}
+        style={style}
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </div>
+  )
+}
+
+const METHOD_COLORS = {
+  GET:     'var(--m-get)',
+  POST:    'var(--m-post)',
+  PUT:     'var(--m-put)',
+  DELETE:  'var(--m-delete)',
+  PATCH:   'var(--m-patch)',
+  HEAD:    'var(--vsc-text-dim)',
+  OPTIONS: 'var(--vsc-text-dim)',
+}
+
+function MethodSelect({ value, onChange }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  return (
+    <div className="ms-wrap" ref={wrapRef}>
+      <button
+        className="ms-btn"
+        style={{ color: METHOD_COLORS[value] }}
+        onClick={() => setOpen(o => !o)}
+      >
+        <span>{value}</span>
+        <svg
+          className={`ms-chevron${open ? ' open' : ''}`}
+          width="10" height="6" viewBox="0 0 10 6" fill="currentColor"
+        >
+          <path d="M0 0l5 6 5-6z"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="ms-menu">
+          {METHODS.map(m => (
+            <div
+              key={m}
+              className={`ms-item${m === value ? ' active' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); onChange(m); setOpen(false) }}
+            >
+              <span className="ms-item-label" style={{ color: METHOD_COLORS[m] }}>{m}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function KVEditor({ rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = 'Value', envVars = [] }) {
   const update = (index, field, value) => {
     const next = rows.map((r, i) => (i === index ? { ...r, [field]: value } : r))
     onChange(next)
@@ -26,17 +134,19 @@ function KVEditor({ rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = '
             checked={row.enabled}
             onChange={(e) => update(i, 'enabled', e.target.checked)}
           />
-          <input
+          <HighlightInput
             className="kv-input"
             placeholder={keyPlaceholder}
             value={row.key}
             onChange={(e) => update(i, 'key', e.target.value)}
+            envVars={envVars}
           />
-          <input
+          <HighlightInput
             className="kv-input"
             placeholder={valuePlaceholder}
             value={row.value}
             onChange={(e) => update(i, 'value', e.target.value)}
+            envVars={envVars}
           />
           <button className="kv-delete" onClick={() => removeRow(i)}>✕</button>
         </div>
@@ -46,33 +156,34 @@ function KVEditor({ rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = '
   )
 }
 
-function AuthPanel({ auth, onChange }) {
+function AuthPanel({ auth, onChange, envVars = [] }) {
   const set = (field, value) => onChange({ ...auth, [field]: value })
 
   return (
     <div className="auth-panel">
       <div>
         <div className="auth-label" style={{ marginBottom: 6 }}>Auth Type</div>
-        <select
-          className="auth-type-select"
+        <SimpleSelect
           value={auth.type}
-          onChange={(e) => onChange({ ...auth, type: e.target.value })}
-        >
-          <option value="none">No Auth</option>
-          <option value="bearer">Bearer Token</option>
-          <option value="basic">Basic Auth</option>
-          <option value="apikey">API Key</option>
-        </select>
+          onChange={(v) => onChange({ ...auth, type: v })}
+          options={[
+            { value: 'none',    label: 'No Auth' },
+            { value: 'bearer',  label: 'Bearer Token' },
+            { value: 'basic',   label: 'Basic Auth' },
+            { value: 'apikey',  label: 'API Key' },
+          ]}
+        />
       </div>
 
       {auth.type === 'bearer' && (
         <div className="auth-field">
           <label className="auth-label">Token</label>
-          <input
+          <HighlightInput
             className="auth-input"
             placeholder="Enter bearer token or {{variable}}"
             value={auth.token || ''}
             onChange={(e) => set('token', e.target.value)}
+            envVars={envVars}
           />
         </div>
       )}
@@ -114,11 +225,12 @@ function AuthPanel({ auth, onChange }) {
           </div>
           <div className="auth-field">
             <label className="auth-label">Key Value</label>
-            <input
+            <HighlightInput
               className="auth-input"
               placeholder="API key value or {{variable}}"
               value={auth.keyValue || ''}
               onChange={(e) => set('keyValue', e.target.value)}
+              envVars={envVars}
             />
           </div>
         </>
@@ -136,6 +248,121 @@ function AuthPanel({ auth, onChange }) {
 function resolvePath(obj, path) {
   if (obj == null || !path) return undefined
   return path.split('.').reduce((acc, key) => acc?.[key], obj)
+}
+
+// ── Custom variable name selector ────────────────────────────────────────────
+
+function VarSelect({ value, onChange, options = [], placeholder }) {
+  const [open, setOpen]       = useState(false)
+  const [activeIdx, setActiveIdx] = useState(-1)
+  const wrapRef  = useRef(null)
+  const inputRef = useRef(null)
+
+  const filtered = options.filter(o =>
+    !value.trim() || o.toLowerCase().includes(value.toLowerCase())
+  )
+
+  const isExisting = options.includes(value)
+  const isNew      = value.trim() && !isExisting
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false)
+        setActiveIdx(-1)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const select = useCallback((opt) => {
+    onChange(opt)
+    setOpen(false)
+    setActiveIdx(-1)
+    inputRef.current?.blur()
+  }, [onChange])
+
+  const handleKeyDown = (e) => {
+    if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      setOpen(true)
+      return
+    }
+    if (!open) return
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActiveIdx(i => Math.min(i + 1, filtered.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActiveIdx(i => Math.max(i - 1, -1))
+    } else if (e.key === 'Enter' && activeIdx >= 0) {
+      e.preventDefault()
+      select(filtered[activeIdx])
+    } else if (e.key === 'Escape') {
+      setOpen(false)
+      setActiveIdx(-1)
+    }
+  }
+
+  return (
+    <div className="var-select-wrap" ref={wrapRef}>
+      <div className="var-select-input-row">
+        <input
+          ref={inputRef}
+          className={`var-select-input${options.length ? ' has-options' : ''}`}
+          placeholder={options.length ? placeholder : 'Variable name (e.g. token)'}
+          value={value}
+          onChange={(e) => { onChange(e.target.value); setOpen(true); setActiveIdx(-1) }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={handleKeyDown}
+          autoComplete="off"
+          spellCheck={false}
+        />
+
+        {/* badge: existing / new */}
+        {isExisting && (
+          <span className="var-select-badge existing">existing</span>
+        )}
+        {isNew && (
+          <span className="var-select-badge new-var">+ new</span>
+        )}
+
+        {/* chevron */}
+        {options.length > 0 && (
+          <span className={`var-select-chevron${open ? ' open' : ''}`}
+            onMouseDown={(e) => { e.preventDefault(); setOpen(o => !o) }}>
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor">
+              <path d="M0 0l5 6 5-6z"/>
+            </svg>
+          </span>
+        )}
+      </div>
+
+      {/* Dropdown menu */}
+      {open && options.length > 0 && (
+        <div className="var-select-menu">
+          {filtered.length === 0 ? (
+            <div className="var-select-empty">No matching variables</div>
+          ) : (
+            filtered.map((opt, idx) => (
+              <div
+                key={opt}
+                className={`var-select-item${activeIdx === idx ? ' active' : ''}`}
+                onMouseDown={(e) => { e.preventDefault(); select(opt) }}
+                onMouseEnter={() => setActiveIdx(idx)}
+              >
+                <span className="var-select-item-icon">{'{{}}'}</span>
+                <span className="var-select-item-name">{opt}</span>
+                <span className="var-select-item-hint">env var</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ── Extract (Capture) Editor ──────────────────────────────────────────────────
@@ -164,11 +391,6 @@ function ExtractEditor({ captures, onChange, response, envVars = [] }) {
         </div>
       )}
 
-      {/* datalist for existing var names */}
-      <datalist id="extract-varnames">
-        {existingVarKeys.map(k => <option key={k} value={k} />)}
-      </datalist>
-
       <div className="kv-editor">
         {captures.map((rule, i) => {
           const matched = rule.path?.trim() && responseData != null
@@ -178,33 +400,17 @@ function ExtractEditor({ captures, onChange, response, envVars = [] }) {
           const pathOk = matched !== undefined && matched !== null
 
           return (
-            <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <div className="kv-row">
-                {/* Variable name — dropdown from env + free type */}
-                <div style={{ position: 'relative', flex: 1 }}>
-                  <input
-                    className="kv-input extract-var-input"
-                    list="extract-varnames"
-                    placeholder={existingVarKeys.length ? 'Select or type variable name' : 'Variable name (e.g. token)'}
-                    value={rule.varName}
-                    onChange={(e) => update(i, 'varName', e.target.value)}
-                    style={{ width: '100%' }}
-                  />
-                  {rule.varName && existingVarKeys.includes(rule.varName) && (
-                    <span style={{
-                      position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
-                      fontSize: 9, color: 'var(--vsc-green)', pointerEvents: 'none',
-                    }}>✓ existing</span>
-                  )}
-                  {rule.varName && !existingVarKeys.includes(rule.varName) && rule.varName.trim() && (
-                    <span style={{
-                      position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
-                      fontSize: 9, color: 'var(--vsc-accent)', pointerEvents: 'none',
-                    }}>+ new</span>
-                  )}
-                </div>
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div className="kv-row" style={{ alignItems: 'stretch' }}>
+                {/* Variable name — custom dropdown */}
+                <VarSelect
+                  value={rule.varName}
+                  onChange={(v) => update(i, 'varName', v)}
+                  options={existingVarKeys}
+                  placeholder="Select or type variable name"
+                />
 
-                <span style={{ fontSize: 11, color: 'var(--vsc-text-muted)', flexShrink: 0, padding: '0 2px' }}>←</span>
+                <span style={{ fontSize: 13, color: 'var(--vsc-text-muted)', flexShrink: 0, padding: '0 4px', alignSelf: 'center' }}>←</span>
 
                 {/* JSON path */}
                 <input
@@ -216,7 +422,7 @@ function ExtractEditor({ captures, onChange, response, envVars = [] }) {
                     ? { borderColor: pathOk ? 'var(--vsc-green)' : 'var(--vsc-red)' }
                     : {}}
                 />
-                <button className="kv-delete" onClick={() => removeRule(i)}>✕</button>
+                <button className="kv-delete" onClick={() => removeRule(i)} style={{ alignSelf: 'center' }}>✕</button>
               </div>
 
               {hasResponse && rule.path?.trim() && (
@@ -346,7 +552,7 @@ const TAB_LABELS = {
   headers: 'Headers',
   body:    'Body',
   auth:    'Auth',
-  extract: 'Extract',
+  extract: 'Scripts',
 }
 
 export default function RequestBuilder({ request, onChange, onSend, onSave, onUpdate, onClose, loading, collections, activeReq, response, envVars = [] }) {
@@ -359,34 +565,23 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSend()
   }
 
-  const methodColor = {
-    GET: 'var(--green)', POST: 'var(--accent)', PUT: 'var(--orange)',
-    DELETE: 'var(--red)', PATCH: 'var(--purple)', HEAD: 'var(--text-secondary)',
-    OPTIONS: 'var(--text-secondary)',
-  }
-
   const extractCount = (request.captures || []).filter(c => c.varName && c.path).length
 
   return (
     <div className="request-builder" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <div className="url-bar">
-        <select
-          className="method-select"
+        <MethodSelect
           value={request.method}
-          onChange={(e) => set('method', e.target.value)}
-          style={{ color: methodColor[request.method] || 'var(--text-primary)' }}
-        >
-          {METHODS.map((m) => (
-            <option key={m} value={m} style={{ color: methodColor[m] }}>{m}</option>
-          ))}
-        </select>
+          onChange={(m) => set('method', m)}
+        />
 
-        <input
+        <HighlightInput
           className="url-input"
           placeholder="https://api.example.com/endpoint  or {{baseUrl}}/path"
           value={request.url}
           onChange={(e) => set('url', e.target.value)}
           onKeyDown={handleKeyDown}
+          envVars={envVars}
         />
 
         {activeReq ? (
@@ -458,6 +653,7 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
             onChange={(v) => set('params', v)}
             keyPlaceholder="Parameter"
             valuePlaceholder="Value"
+            envVars={envVars}
           />
         )}
 
@@ -467,6 +663,7 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
             onChange={(v) => set('headers', v)}
             keyPlaceholder="Header"
             valuePlaceholder="Value"
+            envVars={envVars}
           />
         )}
 
@@ -500,7 +697,7 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
         )}
 
         {tab === 'auth' && (
-          <AuthPanel auth={request.auth} onChange={(v) => set('auth', v)} />
+          <AuthPanel auth={request.auth} onChange={(v) => set('auth', v)} envVars={envVars} />
         )}
 
         {tab === 'extract' && (

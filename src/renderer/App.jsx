@@ -4,6 +4,7 @@ import RequestBuilder from './components/RequestBuilder.jsx'
 import ResponseViewer from './components/ResponseViewer.jsx'
 import BatchRunner from './components/BatchRunner.jsx'
 import EnvPanel from './components/EnvPanel.jsx'
+import Toaster from './components/Toaster.jsx'
 import { sendRequest } from '../services/apiClient.js'
 import { storage } from '../services/storage.js'
 import { scanResponseHeaders } from '../services/securityScanner.js'
@@ -212,13 +213,22 @@ export default function App() {
   const [actMode, setActMode]           = useState('collections')
   const [mainMode, setMainMode]         = useState('request')
   const [securityResults, setSecurityResults] = useState(null)
-  const [captureNotice, setCaptureNotice] = useState(null)
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [isDragging, setIsDragging]     = useState(false)
-  const [activeReq, setActiveReq]       = useState(null) // { id, colId, name }
+  const [activeReq, setActiveReq]       = useState(null)
   const [started, setStarted]           = useState(false)
   const [splashHiding, setSplashHiding] = useState(false)
   const [splashDone, setSplashDone]     = useState(false)
+  const [toasts, setToasts]             = useState([])
+
+  const toast = useCallback((message, type = 'success') => {
+    const id = Date.now() + Math.random()
+    setToasts(prev => [...prev, { id, message, type }])
+  }, [])
+
+  const dismissToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [])
 
   const sidebarMode = SIDEBAR_MODES.includes(actMode) ? actMode : 'collections'
 
@@ -247,7 +257,6 @@ export default function App() {
     setLoading(true)
     setResponse(null)
     setSecurityResults(null)
-    setCaptureNotice(null)
     const result = await sendRequest(request, activeEnvVars)
     setResponse(result)
     setSecurityResults(scanResponseHeaders(result.headers || {}))
@@ -274,13 +283,12 @@ export default function App() {
         }
         setEnvConfig(newConfig)
         await storage.saveEnv(newConfig)
-        setCaptureNotice(captured)
-        setTimeout(() => setCaptureNotice(null), 4000)
+        toast(`${captured.length} variable${captured.length > 1 ? 's' : ''} captured`, 'success')
       }
     }
 
     setLoading(false)
-  }, [request, activeEnvVars, envConfig])
+  }, [request, activeEnvVars, envConfig, toast])
 
   const handleLoadRequest = useCallback((req, colId) => {
     setRequest({
@@ -316,7 +324,8 @@ export default function App() {
     )
     setCollections(updated)
     await storage.saveCollections(updated)
-  }, [request, collections])
+    toast('Request saved')
+  }, [request, collections, toast])
 
   const persist = async (updated) => {
     setCollections(updated)
@@ -328,22 +337,26 @@ export default function App() {
     const updated = [...collections, newCol]
     await persist(updated)
     callback?.(newCol.id)
-  }, [collections])
+    toast('Collection created')
+  }, [collections, toast])
 
   const handleRenameCollection = useCallback(async (id, name) => {
     await persist(collections.map((c) => c.id === id ? { ...c, name } : c))
-  }, [collections])
+    toast('Collection renamed', 'info')
+  }, [collections, toast])
 
   const handleDeleteCollection = useCallback(async (id) => {
     await persist(collections.filter((c) => c.id !== id))
-  }, [collections])
+    toast('Collection deleted', 'warning')
+  }, [collections, toast])
 
   const handleAddRequest = useCallback(async (colId, data) => {
     const newReq = { id: Date.now().toString(), headers: [], params: [], body: '', auth: { type: 'none' }, ...data }
     await persist(collections.map((c) =>
       c.id === colId ? { ...c, requests: [...c.requests, newReq] } : c
     ))
-  }, [collections])
+    toast('Request added')
+  }, [collections, toast])
 
   const handleEditRequest = useCallback(async (colId, reqId, data) => {
     await persist(collections.map((c) =>
@@ -358,7 +371,8 @@ export default function App() {
     await persist(collections.map((c) =>
       c.id === colId ? { ...c, requests: c.requests.filter((r) => r.id !== reqId) } : c
     ))
-  }, [collections, activeReq])
+    toast('Request deleted', 'warning')
+  }, [collections, activeReq, toast])
 
   const handleUpdateRequest = useCallback(async () => {
     if (!activeReq) return
@@ -373,7 +387,8 @@ export default function App() {
     )
     setCollections(updated)
     await storage.saveCollections(updated)
-  }, [activeReq, request, collections])
+    toast(`${request.method} updated`)
+  }, [activeReq, request, collections, toast])
 
   const handleDuplicateRequest = useCallback(async (colId, reqId) => {
     const col = collections.find((c) => c.id === colId)
@@ -388,7 +403,8 @@ export default function App() {
     await persist(collections.map((c) =>
       c.id === colId ? { ...c, requests: [...c.requests, copy] } : c
     ))
-  }, [collections])
+    toast('Request duplicated')
+  }, [collections, toast])
 
   const handleEnvChange = useCallback(async (newConfig) => {
     setEnvConfig(newConfig)
@@ -533,11 +549,6 @@ export default function App() {
             )}
           </>
         )}
-        {captureNotice && (
-          <span className="statusbar-item" style={{ color: '#4ec9b0' }}>
-            ✓ Captured: {captureNotice.map(v => `{{${v}}}`).join(', ')}
-          </span>
-        )}
         <span className="statusbar-item" style={{ marginLeft: 'auto' }}>
           {(() => {
             const active = envConfig.environments.find(e => e.id === envConfig.activeId)
@@ -550,6 +561,8 @@ export default function App() {
           {collections.length} collection{collections.length !== 1 ? 's' : ''}
         </span>
       </div>
+
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }
