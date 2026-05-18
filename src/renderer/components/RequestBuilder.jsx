@@ -70,7 +70,7 @@ function AuthPanel({ auth, onChange }) {
           <label className="auth-label">Token</label>
           <input
             className="auth-input"
-            placeholder="Enter bearer token"
+            placeholder="Enter bearer token or {{variable}}"
             value={auth.token || ''}
             onChange={(e) => set('token', e.target.value)}
           />
@@ -116,7 +116,7 @@ function AuthPanel({ auth, onChange }) {
             <label className="auth-label">Key Value</label>
             <input
               className="auth-input"
-              placeholder="API key value"
+              placeholder="API key value or {{variable}}"
               value={auth.keyValue || ''}
               onChange={(e) => set('keyValue', e.target.value)}
             />
@@ -138,27 +138,36 @@ function resolvePath(obj, path) {
   return path.split('.').reduce((acc, key) => acc?.[key], obj)
 }
 
-function CaptureEditor({ captures, onChange, response }) {
+// ── Extract (Capture) Editor ──────────────────────────────────────────────────
+
+function ExtractEditor({ captures, onChange, response, envVars = [] }) {
   const update = (i, field, value) =>
     onChange(captures.map((c, idx) => idx === i ? { ...c, [field]: value } : c))
   const addRule = () => onChange([...captures, { varName: '', path: '' }])
   const removeRule = (i) => onChange(captures.filter((_, idx) => idx !== i))
 
   const responseData = response?.data ?? null
+  const existingVarKeys = envVars.filter(v => v.key).map(v => v.key)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontSize: 11, color: 'var(--vsc-text-muted)', lineHeight: 1.6 }}>
-        After response, save values from the JSON body to environment variables.
-        Path is relative to the response root — e.g.{' '}
-        <code style={{ background: '#3c3c3c', padding: '1px 5px', borderRadius: 3, fontFamily: 'Consolas,monospace', fontSize: 10, color: '#9cdcfe' }}>
-          access_token
-        </code>
-        {' '}or{' '}
-        <code style={{ background: '#3c3c3c', padding: '1px 5px', borderRadius: 3, fontFamily: 'Consolas,monospace', fontSize: 10, color: '#9cdcfe' }}>
-          data.token
-        </code>
+        After a response is received, extract values from the JSON body and save them as environment variables automatically.
+        Use{' '}<code style={{ background: '#3c3c3c', padding: '1px 5px', borderRadius: 3, fontFamily: 'Consolas,monospace', fontSize: 10, color: '#9cdcfe' }}>access_token</code>
+        {' '}or{' '}<code style={{ background: '#3c3c3c', padding: '1px 5px', borderRadius: 3, fontFamily: 'Consolas,monospace', fontSize: 10, color: '#9cdcfe' }}>data.token</code>
+        {' '}as the path.
       </div>
+
+      {existingVarKeys.length === 0 && (
+        <div style={{ fontSize: 11, color: 'var(--vsc-orange)', background: 'rgba(206,145,120,0.08)', border: '1px solid rgba(206,145,120,0.2)', borderRadius: 4, padding: '6px 10px' }}>
+          No environment variables yet — create some in the Env tab first, then select them here.
+        </div>
+      )}
+
+      {/* datalist for existing var names */}
+      <datalist id="extract-varnames">
+        {existingVarKeys.map(k => <option key={k} value={k} />)}
+      </datalist>
 
       <div className="kv-editor">
         {captures.map((rule, i) => {
@@ -171,26 +180,49 @@ function CaptureEditor({ captures, onChange, response }) {
           return (
             <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div className="kv-row">
-                <input
-                  className="kv-input"
-                  placeholder="Variable name  (e.g. token)"
-                  value={rule.varName}
-                  onChange={(e) => update(i, 'varName', e.target.value)}
-                />
+                {/* Variable name — dropdown from env + free type */}
+                <div style={{ position: 'relative', flex: 1 }}>
+                  <input
+                    className="kv-input extract-var-input"
+                    list="extract-varnames"
+                    placeholder={existingVarKeys.length ? 'Select or type variable name' : 'Variable name (e.g. token)'}
+                    value={rule.varName}
+                    onChange={(e) => update(i, 'varName', e.target.value)}
+                    style={{ width: '100%' }}
+                  />
+                  {rule.varName && existingVarKeys.includes(rule.varName) && (
+                    <span style={{
+                      position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                      fontSize: 9, color: 'var(--vsc-green)', pointerEvents: 'none',
+                    }}>✓ existing</span>
+                  )}
+                  {rule.varName && !existingVarKeys.includes(rule.varName) && rule.varName.trim() && (
+                    <span style={{
+                      position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                      fontSize: 9, color: 'var(--vsc-accent)', pointerEvents: 'none',
+                    }}>+ new</span>
+                  )}
+                </div>
+
                 <span style={{ fontSize: 11, color: 'var(--vsc-text-muted)', flexShrink: 0, padding: '0 2px' }}>←</span>
+
+                {/* JSON path */}
                 <input
                   className="kv-input"
                   placeholder="JSON path  (e.g. access_token)"
                   value={rule.path}
                   onChange={(e) => update(i, 'path', e.target.value)}
-                  style={hasResponse && rule.path?.trim() ? { borderColor: pathOk ? 'var(--vsc-green)' : 'var(--vsc-red)', outlineColor: pathOk ? 'var(--vsc-green)' : 'var(--vsc-red)' } : {}}
+                  style={hasResponse && rule.path?.trim()
+                    ? { borderColor: pathOk ? 'var(--vsc-green)' : 'var(--vsc-red)' }
+                    : {}}
                 />
                 <button className="kv-delete" onClick={() => removeRule(i)}>✕</button>
               </div>
+
               {hasResponse && rule.path?.trim() && (
                 <div style={{ paddingLeft: 2, fontSize: 11, fontFamily: 'Consolas,monospace' }}>
                   {pathOk
-                    ? <span style={{ color: 'var(--vsc-green)' }}>✓ &quot;{String(matched).slice(0, 60)}{String(matched).length > 60 ? '…' : ''}&quot;</span>
+                    ? <span style={{ color: 'var(--vsc-green)' }}>✓ &quot;{String(matched).slice(0, 60)}{String(matched).length > 60 ? '…' : ''}&quot; → <span style={{ color: '#9cdcfe' }}>{'{{'}{rule.varName || '?'}{'}}' }</span></span>
                     : <span style={{ color: 'var(--vsc-red)' }}>✗ path not found in last response</span>
                   }
                 </div>
@@ -198,9 +230,10 @@ function CaptureEditor({ captures, onChange, response }) {
             </div>
           )
         })}
-        <button className="add-row-btn" onClick={addRule}>+ Add capture rule</button>
+        <button className="add-row-btn" onClick={addRule}>+ Add extract rule</button>
       </div>
 
+      {/* Response tree browser */}
       {responseData != null && typeof responseData === 'object' && (
         <div style={{ marginTop: 4 }}>
           <div style={{ fontSize: 10, color: 'var(--vsc-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
@@ -258,11 +291,7 @@ function ResponseTree({ data, path = '', onSelect, depth = 0 }) {
             >
               {key}:
             </span>
-            {isLeaf ? (
-              <ResponseTree data={val} path={fullPath} onSelect={onSelect} depth={depth + 1} />
-            ) : (
-              <ResponseTree data={val} path={fullPath} onSelect={onSelect} depth={depth + 1} />
-            )}
+            <ResponseTree data={val} path={fullPath} onSelect={onSelect} depth={depth + 1} />
           </div>
         )
       })}
@@ -312,7 +341,15 @@ function SaveModal({ onSave, onClose, collections }) {
   )
 }
 
-export default function RequestBuilder({ request, onChange, onSend, onSave, onUpdate, onClose, loading, collections, activeReq, response }) {
+const TAB_LABELS = {
+  params:  'Params',
+  headers: 'Headers',
+  body:    'Body',
+  auth:    'Auth',
+  extract: 'Extract',
+}
+
+export default function RequestBuilder({ request, onChange, onSend, onSave, onUpdate, onClose, loading, collections, activeReq, response, envVars = [] }) {
   const [tab, setTab] = useState('params')
   const [showSave, setShowSave] = useState(false)
 
@@ -327,6 +364,8 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
     DELETE: 'var(--red)', PATCH: 'var(--purple)', HEAD: 'var(--text-secondary)',
     OPTIONS: 'var(--text-secondary)',
   }
+
+  const extractCount = (request.captures || []).filter(c => c.varName && c.path).length
 
   return (
     <div className="request-builder" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -344,7 +383,7 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
 
         <input
           className="url-input"
-          placeholder="https://api.example.com/endpoint"
+          placeholder="https://api.example.com/endpoint  or {{baseUrl}}/path"
           value={request.url}
           onChange={(e) => set('url', e.target.value)}
           onKeyDown={handleKeyDown}
@@ -386,13 +425,13 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
       </div>
 
       <div className="tabs">
-        {['params', 'headers', 'body', 'auth', 'capture'].map((t) => (
+        {['params', 'headers', 'body', 'auth', 'extract'].map((t) => (
           <button
             key={t}
             className={`tab-btn ${tab === t ? 'active' : ''}`}
             onClick={() => setTab(t)}
           >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
+            {TAB_LABELS[t]}
             {t === 'headers' && request.headers.filter((h) => h.key && h.enabled).length > 0 && (
               <span style={{ marginLeft: 4, color: 'var(--vsc-accent)', fontSize: 10 }}>
                 {request.headers.filter((h) => h.key && h.enabled).length}
@@ -403,9 +442,9 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
                 {request.params.filter((p) => p.key && p.enabled).length}
               </span>
             )}
-            {t === 'capture' && (request.captures || []).filter(c => c.varName && c.path).length > 0 && (
-              <span style={{ marginLeft: 4, color: 'var(--vsc-accent)', fontSize: 10 }}>
-                {(request.captures || []).filter(c => c.varName && c.path).length}
+            {t === 'extract' && extractCount > 0 && (
+              <span style={{ marginLeft: 4, color: 'var(--vsc-green)', fontSize: 10 }}>
+                {extractCount}
               </span>
             )}
           </button>
@@ -464,11 +503,12 @@ export default function RequestBuilder({ request, onChange, onSend, onSave, onUp
           <AuthPanel auth={request.auth} onChange={(v) => set('auth', v)} />
         )}
 
-        {tab === 'capture' && (
-          <CaptureEditor
+        {tab === 'extract' && (
+          <ExtractEditor
             captures={request.captures || []}
             onChange={(v) => set('captures', v)}
             response={response}
+            envVars={envVars}
           />
         )}
       </div>

@@ -1,6 +1,26 @@
 import { useState, useRef, useCallback } from 'react'
 import { sendRequest } from '../../services/apiClient.js'
 
+function resolvePath(obj, path) {
+  if (obj == null || !path) return undefined
+  return path.split('.').reduce((acc, key) => acc?.[key], obj)
+}
+
+function applyCaptures(vars, captures, responseData) {
+  if (!captures?.length || responseData == null) return vars
+  let next = [...vars]
+  captures.forEach(({ varName, path }) => {
+    if (!varName?.trim() || !path?.trim()) return
+    const value = resolvePath(responseData, path.trim())
+    if (value == null) return
+    const str = String(value)
+    const idx = next.findIndex(v => v.key === varName.trim())
+    if (idx >= 0) next = next.map((v, i) => i === idx ? { ...v, value: str } : v)
+    else next = [...next, { key: varName.trim(), value: str, enabled: true }]
+  })
+  return next
+}
+
 function getStatusClass(status) {
   if (!status || status === 0) return 'status-0xx'
   if (status < 300) return 'status-2xx'
@@ -9,8 +29,8 @@ function getStatusClass(status) {
   return 'status-5xx'
 }
 
-
 function FlowNode({ node, index, total, onRemove, onDragStart, onDragOver, onDrop, draggingOver }) {
+  const hasExtracts = (node.captures || []).filter(c => c.varName && c.path).length
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div
@@ -23,6 +43,12 @@ function FlowNode({ node, index, total, onRemove, onDragStart, onDragOver, onDro
         <div className="flow-node-header">
           <div className="flow-node-step">Step {index + 1}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {hasExtracts > 0 && (
+              <span title={`${hasExtracts} variable extract rule(s)`}
+                style={{ fontSize: 9, color: 'var(--vsc-green)', background: 'rgba(78,201,176,0.12)', borderRadius: 3, padding: '1px 4px' }}>
+                extract {hasExtracts}
+              </span>
+            )}
             <span className="flow-drag-handle" title="Drag to reorder">⠿</span>
             <button className="flow-node-remove" onClick={() => onRemove(node.nodeId)} title="Remove">✕</button>
           </div>
@@ -90,6 +116,9 @@ function ResultCard({ result, index }) {
           <span className="batch-result-index">#{index + 1}</span>
           <span className={`method-badge m-${result.method}`}>{result.method}</span>
           <span className="batch-result-name">{result.name}</span>
+          {result.iteration > 1 && (
+            <span style={{ fontSize: 10, color: 'var(--vsc-text-muted)' }}>iter {result.iteration}</span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span className={`status-badge ${getStatusClass(result.status)}`}>
@@ -100,8 +129,21 @@ function ResultCard({ result, index }) {
           </span>
         </div>
       </div>
-      <div className="batch-result-url">{result.url}</div>
+      <div className="batch-result-url">{result.resolvedUrl || result.url}</div>
       {result.error && <div className="batch-result-error">{result.error}</div>}
+      {result.captured?.length > 0 && (
+        <div style={{ marginTop: 5, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {result.captured.map((c, i) => (
+            <span key={i} style={{
+              fontSize: 10, background: 'rgba(78,201,176,0.12)', color: 'var(--vsc-green)',
+              border: '1px solid rgba(78,201,176,0.25)', borderRadius: 3, padding: '1px 6px',
+              fontFamily: 'Consolas,monospace',
+            }}>
+              ✓ {c.key} = &quot;{c.value.length > 30 ? c.value.slice(0, 30) + '…' : c.value}&quot;
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -132,39 +174,33 @@ function useResize(initial, min, max) {
   return [width, dragging, startResize]
 }
 
-// status: 'idle' | 'running' | 'done' | 'cancelled'
-export default function BatchRunner({ collections }) {
+export default function BatchRunner({ collections, envConfig, activeEnvVars = [] }) {
   const [selectedColId, setSelectedColId] = useState(collections[0]?.id || '')
   const [flowNodes, setFlowNodes]         = useState([])
   const [iterations, setIterations]       = useState(1)
   const [concurrency, setConcurrency]     = useState(1)
-  const [delay, setDelay]                 = useState(1000)
+  const [delay, setDelay]                 = useState(0)
   const [status, setStatus]               = useState('idle')
   const [progress, setProgress]           = useState(0)
   const [total, setTotal]                 = useState(0)
   const [results, setResults]             = useState([])
   const [draggingOver, setDraggingOver]   = useState(null)
 
-  const [leftWidth,  leftDragging,  startLeftResize]   = useResize(240, 180, 420)
-  const [centerWidth, centerDragging, startCenterResize] = useResize(300, 220, 500)
+  const [leftWidth,    leftDragging,   startLeftResize]   = useResize(240, 180, 420)
+  const [centerWidth, centerDragging, startCenterResize]  = useResize(300, 220, 500)
 
-  const runIdRef    = useRef(0)
+  const runIdRef     = useRef(0)
   const dragIndexRef = useRef(null)
 
-  const selectedCol  = collections.find((c) => c.id === selectedColId)
-  const colRequests  = selectedCol?.requests || []
+  const activeEnvName = envConfig?.environments?.find(e => e.id === envConfig.activeId)?.name
 
-  const addToFlow = (req) => {
-    setFlowNodes((prev) => [...prev, { ...req, nodeId: `${req.id}-${Date.now()}` }])
-  }
+  const selectedCol = collections.find((c) => c.id === selectedColId)
+  const colRequests = selectedCol?.requests || []
 
-  const removeFromFlow = (nodeId) => {
-    setFlowNodes((prev) => prev.filter((n) => n.nodeId !== nodeId))
-  }
-
+  const addToFlow    = (req) => setFlowNodes(prev => [...prev, { ...req, nodeId: `${req.id}-${Date.now()}` }])
+  const removeFromFlow = (nodeId) => setFlowNodes(prev => prev.filter(n => n.nodeId !== nodeId))
   const handleDragStart = (index) => { dragIndexRef.current = index }
-
-  const handleDragOver = (index) => {
+  const handleDragOver  = (index) => {
     if (dragIndexRef.current === null || dragIndexRef.current === index) return
     setDraggingOver(index)
     const next = [...flowNodes]
@@ -173,100 +209,106 @@ export default function BatchRunner({ collections }) {
     dragIndexRef.current = index
     setFlowNodes(next)
   }
-
   const handleDrop = () => { dragIndexRef.current = null; setDraggingOver(null) }
+  const cancel     = () => { runIdRef.current++; setStatus('cancelled') }
 
-  const cancel = () => { runIdRef.current++; setStatus('cancelled') }
-
+  // ── Run batch ──────────────────────────────────────────────────────────────
+  // Each iteration runs its steps SEQUENTIALLY so captures thread through.
+  // `concurrency` iterations run at the same time.
   const runBatch = useCallback(async () => {
     if (!flowNodes.length) return
     const myRunId = ++runIdRef.current
-
-    const jobs = []
-    for (let i = 0; i < iterations; i++) {
-      for (const node of flowNodes) jobs.push({ ...node, iteration: i + 1 })
-    }
+    const totalJobs = flowNodes.length * iterations
 
     setStatus('running')
     setProgress(0)
-    setTotal(jobs.length)
+    setTotal(totalJobs)
     setResults([])
 
-    let jobIdx = 0
-    // Collect all fired promises so we can wait for them at the end
-    const pending = []
+    const runIteration = async (iterNum) => {
+      // Each iteration gets its own working copy of env vars starting from the active env
+      let vars = [...activeEnvVars]
 
-    // Fire a single job and update UI the moment it resolves — no waiting for others
-    const fireJob = (job) => {
-      const t0 = performance.now()
-      const p = sendRequest(job).then(
-        (res) => {
-          if (runIdRef.current !== myRunId) return
-          setProgress((c) => c + 1)
-          setResults((prev) => [...prev, {
-            id: `${job.nodeId}-${job.iteration}-${Date.now()}`,
-            name: job.name, method: job.method, url: job.url,
-            iteration: job.iteration,
-            status: res.status,
-            time: res.time ?? Math.round(performance.now() - t0),
-            error: res.error || null,
-          }])
-        },
-        (e) => {
-          if (runIdRef.current !== myRunId) return
-          setProgress((c) => c + 1)
-          setResults((prev) => [...prev, {
-            id: `${job.nodeId}-${job.iteration}-${Date.now()}`,
-            name: job.name, method: job.method, url: job.url,
-            iteration: job.iteration, status: 0,
-            time: Math.round(performance.now() - t0), error: e.message,
-          }])
+      for (const node of flowNodes) {
+        if (runIdRef.current !== myRunId) return
+
+        const t0 = performance.now()
+        const res = await sendRequest(node, vars)
+        const elapsed = Math.round(performance.now() - t0)
+
+        if (runIdRef.current !== myRunId) return
+
+        // Apply captures to vars so the NEXT step can use them
+        const capturedList = []
+        if (node.captures?.length && res.data != null) {
+          node.captures.forEach(({ varName, path }) => {
+            if (!varName?.trim() || !path?.trim()) return
+            const value = resolvePath(res.data, path.trim())
+            if (value == null) return
+            const str = String(value)
+            capturedList.push({ key: varName.trim(), value: str })
+          })
+          vars = applyCaptures(vars, node.captures, res.data)
         }
-      )
-      pending.push(p)
+
+        setProgress(p => p + 1)
+        setResults(prev => [...prev, {
+          id:          `${node.nodeId}-${iterNum}-${Date.now()}`,
+          name:        node.name,
+          method:      node.method,
+          url:         node.url,
+          resolvedUrl: res.resolvedUrl ?? node.url,
+          iteration:   iterNum,
+          status:      res.status,
+          time:        res.time ?? elapsed,
+          error:       res.error || null,
+          captured:    capturedList,
+        }])
+      }
     }
 
-    // Burst: fire `concurrency` requests at once, no waiting
-    const burst = () => {
-      const count = Math.min(concurrency, jobs.length - jobIdx)
-      for (let i = 0; i < count; i++) fireJob(jobs[jobIdx++])
+    // Run iterations in batches of `concurrency`
+    let started = 0
+    while (started < iterations) {
+      if (runIdRef.current !== myRunId) break
+      const batch = []
+      for (let c = 0; c < concurrency && started < iterations; c++, started++) {
+        batch.push(runIteration(started + 1))
+      }
+      await Promise.all(batch)
+
+      if (started < iterations && delay > 0 && runIdRef.current === myRunId) {
+        await new Promise(r => setTimeout(r, delay))
+      }
     }
-
-    // First burst fires immediately
-    burst()
-
-    // Subsequent bursts fire every `interval` ms until all jobs are dispatched
-    const intervalMs = delay > 0 ? delay : 1000
-    await new Promise((resolve) => {
-      if (jobIdx >= jobs.length) { resolve(); return }
-      const id = setInterval(() => {
-        if (runIdRef.current !== myRunId) { clearInterval(id); resolve(); return }
-        burst()
-        if (jobIdx >= jobs.length) { clearInterval(id); resolve() }
-      }, intervalMs)
-    })
-
-    // Wait for all in-flight requests to land (or cancel will just let them fall silent)
-    await Promise.all(pending)
 
     if (runIdRef.current === myRunId) setStatus('done')
-  }, [flowNodes, iterations, concurrency, delay])
+  }, [flowNodes, iterations, concurrency, delay, activeEnvVars])
 
-  const progressPct = total > 0 ? Math.round((progress / total) * 100) : 0
-  const isRunning   = status === 'running'
+  const progressPct  = total > 0 ? Math.round((progress / total) * 100) : 0
+  const isRunning    = status === 'running'
   const showProgress = status !== 'idle'
 
   return (
     <div style={{ display: 'flex', flex: 1, height: '100%', overflow: 'hidden' }}>
 
-      {/* ── LEFT: Explorer-style collection panel ─────────────── */}
-      <div
-        className="batch-left-panel"
-        style={{ width: leftWidth, minWidth: leftWidth, maxWidth: leftWidth }}
-      >
-        {/* Explorer header */}
-        <div className="sidebar-title">
-          <span>Explorer</span>
+      {/* ── LEFT: Explorer ────────────────────────────────────── */}
+      <div className="batch-left-panel" style={{ width: leftWidth, minWidth: leftWidth, maxWidth: leftWidth }}>
+        <div className="sidebar-title"><span>Explorer</span></div>
+
+        {/* Env badge */}
+        <div style={{ padding: '4px 10px 0', flexShrink: 0 }}>
+          {activeEnvName ? (
+            <div style={{ fontSize: 10, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--vsc-green)' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--vsc-green)', display: 'inline-block' }}/>
+              Env: <strong>{activeEnvName}</strong>
+              <span style={{ color: 'var(--vsc-text-muted)' }}>({activeEnvVars.filter(v=>v.enabled&&v.key).length} vars)</span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 10, color: 'var(--vsc-orange)' }}>
+              ⚠ No active environment — {'{{...}}'} variables will not be substituted
+            </div>
+          )}
         </div>
 
         {/* Collection picker */}
@@ -286,17 +328,11 @@ export default function BatchRunner({ collections }) {
         {/* Request list */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {collections.length === 0 && (
-            <div style={{ padding: '16px 14px', fontSize: 11, color: 'var(--vsc-text-muted)' }}>
-              Create a collection first
-            </div>
+            <div style={{ padding: '16px 14px', fontSize: 11, color: 'var(--vsc-text-muted)' }}>Create a collection first</div>
           )}
-
           {collections.length > 0 && colRequests.length === 0 && (
-            <div style={{ padding: '10px 12px', fontSize: 11, color: 'var(--vsc-text-muted)' }}>
-              No requests in this collection
-            </div>
+            <div style={{ padding: '10px 12px', fontSize: 11, color: 'var(--vsc-text-muted)' }}>No requests in this collection</div>
           )}
-
           {colRequests.map((req) => (
             <div
               key={req.id}
@@ -307,6 +343,11 @@ export default function BatchRunner({ collections }) {
             >
               <span className={`method-badge m-${req.method}`}>{req.method}</span>
               <span className="tree-label">{req.name}</span>
+              {(req.captures || []).filter(c=>c.varName&&c.path).length > 0 && (
+                <span style={{ fontSize: 9, color: 'var(--vsc-green)', marginLeft: 'auto' }}>
+                  extract {(req.captures).filter(c=>c.varName&&c.path).length}
+                </span>
+              )}
               <span className="batch-tree-plus">+</span>
             </div>
           ))}
@@ -326,10 +367,16 @@ export default function BatchRunner({ collections }) {
               onChange={(e) => setConcurrency(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))} disabled={isRunning} />
           </label>
           <label className="batch-config-label">
-            <span className="auth-label">Interval (ms)</span>
-            <input type="number" className="auth-input" min={100} max={60000} value={delay || 1000}
-              onChange={(e) => setDelay(Math.max(100, parseInt(e.target.value) || 1000))} disabled={isRunning} />
+            <span className="auth-label">Delay (ms)</span>
+            <input type="number" className="auth-input" min={0} max={60000} value={delay}
+              onChange={(e) => setDelay(Math.max(0, parseInt(e.target.value) || 0))} disabled={isRunning} />
           </label>
+
+          {concurrency > 1 && (
+            <div style={{ fontSize: 10, color: 'var(--vsc-text-muted)', lineHeight: 1.4 }}>
+              ⚠ Concurrency {'>'} 1: multiple iterations run in parallel — captured values are not shared across iterations
+            </div>
+          )}
 
           {!isRunning ? (
             <button className="batch-run-btn" onClick={runBatch} disabled={!flowNodes.length}>
@@ -345,17 +392,10 @@ export default function BatchRunner({ collections }) {
         </div>
       </div>
 
-      {/* Resize handle: left | center */}
-      <div
-        className={`sidebar-resize-handle ${leftDragging ? 'dragging' : ''}`}
-        onMouseDown={startLeftResize}
-      />
+      <div className={`sidebar-resize-handle ${leftDragging ? 'dragging' : ''}`} onMouseDown={startLeftResize} />
 
       {/* ── CENTER: Flow diagram ──────────────────────────────── */}
-      <div
-        className="batch-flow-panel"
-        style={{ width: centerWidth, minWidth: centerWidth, maxWidth: centerWidth }}
-      >
+      <div className="batch-flow-panel" style={{ width: centerWidth, minWidth: centerWidth, maxWidth: centerWidth }}>
         <div className="batch-flow-header">
           <span className="batch-section-title" style={{ padding: 0 }}>Execution Flow</span>
           {flowNodes.length > 0 && !isRunning && (
@@ -363,10 +403,7 @@ export default function BatchRunner({ collections }) {
           )}
         </div>
 
-        <div
-          className="batch-flow-canvas"
-          onDragEnd={() => { dragIndexRef.current = null; setDraggingOver(null) }}
-        >
+        <div className="batch-flow-canvas" onDragEnd={() => { dragIndexRef.current = null; setDraggingOver(null) }}>
           {flowNodes.length === 0 ? (
             <div className="empty-state" style={{ height: '100%' }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>←</div>
@@ -393,11 +430,7 @@ export default function BatchRunner({ collections }) {
         </div>
       </div>
 
-      {/* Resize handle: center | right */}
-      <div
-        className={`sidebar-resize-handle ${centerDragging ? 'dragging' : ''}`}
-        onMouseDown={startCenterResize}
-      />
+      <div className={`sidebar-resize-handle ${centerDragging ? 'dragging' : ''}`} onMouseDown={startCenterResize} />
 
       {/* ── RIGHT: Results ────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
@@ -406,7 +439,7 @@ export default function BatchRunner({ collections }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
               <span style={{ fontSize: 12, color: 'var(--vsc-text-dim)' }}>
                 {isRunning
-                  ? progress < total ? 'Receiving…' : 'Waiting for remaining responses…'
+                  ? progress < total ? 'Running…' : 'Waiting for responses…'
                   : status === 'cancelled' ? 'Cancelled'
                   : 'Completed'}
                 {' '}— {progress} / {total}
@@ -419,15 +452,10 @@ export default function BatchRunner({ collections }) {
               </span>
             </div>
             <div className="batch-progress-track">
-              <div
-                className="batch-progress-fill"
-                style={{
-                  width: `${progressPct}%`,
-                  background: status === 'cancelled' ? 'var(--vsc-orange)'
-                    : isRunning ? 'var(--vsc-accent)'
-                    : 'var(--vsc-green)',
-                }}
-              />
+              <div className="batch-progress-fill" style={{
+                width: `${progressPct}%`,
+                background: status === 'cancelled' ? 'var(--vsc-orange)' : isRunning ? 'var(--vsc-accent)' : 'var(--vsc-green)',
+              }} />
             </div>
           </div>
         )}
@@ -441,12 +469,10 @@ export default function BatchRunner({ collections }) {
             </div>
           )}
 
-          {/* Summary appears only after ALL responses are back */}
           {(status === 'done' || status === 'cancelled') && results.length > 0 && (
             <SummaryCard results={results} status={status} />
           )}
 
-          {/* Result cards stream in as each response arrives */}
           {results.map((result, i) => (
             <ResultCard key={result.id} result={result} index={i} />
           ))}

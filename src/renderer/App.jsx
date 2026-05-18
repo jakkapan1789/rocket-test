@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import RequestBuilder from './components/RequestBuilder.jsx'
 import ResponseViewer from './components/ResponseViewer.jsx'
@@ -116,6 +116,34 @@ function VerticalSplit({ top, bottom }) {
   )
 }
 
+function SplashScreen({ hiding }) {
+  return (
+    <div className={`splash${hiding ? ' hiding' : ''}`}>
+      <div className="splash-rocket">
+        <svg width="80" height="80" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M16 2C13 5 10 9.5 10 16v1l6 5 6-5v-1C22 9.5 19 5 16 2z" fill="#0078d4"/>
+          <path d="M16 2C13 5 10 9 10 12h12C22 9 19 5 16 2z" fill="#005ba1"/>
+          <circle cx="16" cy="15" r="3.2" fill="#1a9fff" opacity="0.25"/>
+          <circle cx="16" cy="15" r="2.2" fill="white" opacity="0.9"/>
+          <circle cx="15" cy="14" r="0.7" fill="white"/>
+          <path d="M10 17L5.5 24 10 22z" fill="#005ba1"/>
+          <path d="M22 17L26.5 24 22 22z" fill="#005ba1"/>
+          <rect x="13" y="21" width="6" height="2" rx="0.5" fill="#003f75"/>
+          <g className="splash-flame">
+            <path d="M13 23 C12.5 26 13.5 30 16 30 C18.5 30 19.5 26 19 23z" fill="#ff8c00"/>
+            <path d="M14 23 C13.7 25.5 14.5 28.5 16 28.5 C17.5 28.5 18.3 25.5 18 23z" fill="#ffbc00"/>
+            <path d="M15 23 C14.8 25 15.4 27 16 27 C16.6 27 17.2 25 17 23z" fill="#fff5c0"/>
+          </g>
+        </svg>
+      </div>
+      <div className="splash-title"><span>Rocket</span> Test</div>
+      <div className="splash-dots">
+        <span/><span/><span/>
+      </div>
+    </div>
+  )
+}
+
 function WinControls() {
   const [maximized, setMaximized] = useState(false)
   const api = window.winControls
@@ -189,21 +217,28 @@ export default function App() {
   const [isDragging, setIsDragging]     = useState(false)
   const [activeReq, setActiveReq]       = useState(null) // { id, colId, name }
   const [started, setStarted]           = useState(false)
+  const [splashHiding, setSplashHiding] = useState(false)
+  const [splashDone, setSplashDone]     = useState(false)
 
   const sidebarMode = SIDEBAR_MODES.includes(actMode) ? actMode : 'collections'
 
   const activeEnvVars = envConfig.environments.find(e => e.id === envConfig.activeId)?.vars || []
 
   useEffect(() => {
-    storage.getCollections().then(setCollections)
-    storage.getEnv().then(raw => {
+    Promise.all([
+      storage.getCollections(),
+      storage.getEnv(),
+    ]).then(([cols, raw]) => {
+      setCollections(cols)
       if (Array.isArray(raw) && raw.length > 0) {
-        // migrate old flat format
         const id = 'env-' + Date.now()
         setEnvConfig({ activeId: id, environments: [{ id, name: 'Default', vars: raw }] })
       } else if (raw?.environments) {
         setEnvConfig(raw)
       }
+      // Start fade-out, then fully unmount splash
+      setSplashHiding(true)
+      setTimeout(() => setSplashDone(true), 360)
     })
   }, [])
 
@@ -400,6 +435,7 @@ export default function App() {
 
   return (
     <div className="app">
+      {!splashDone && <SplashScreen hiding={splashHiding} />}
       <header className="title-bar">
         <span className="title-logo">
           <RocketLogo size={18} />
@@ -466,6 +502,7 @@ export default function App() {
                   collections={collections}
                   activeReq={activeReq}
                   response={response}
+                  envVars={activeEnvVars}
                 />
               }
               bottom={
@@ -477,7 +514,7 @@ export default function App() {
               }
             />
           )}
-          {mainMode === 'batch' && <BatchRunner collections={collections} />}
+          {mainMode === 'batch' && <BatchRunner collections={collections} envConfig={envConfig} activeEnvVars={activeEnvVars} />}
           {mainMode === 'env' && <EnvPanel envConfig={envConfig} onChange={handleEnvChange} />}
         </div>
       </div>
